@@ -1,0 +1,97 @@
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: counter-pipeline
+spec:
+  params:
+    - name: repo-url
+      type: string
+      default: https://github.com/officialayush23/ci-cd-final-project
+    - name: revision
+      type: string
+      default: main
+    - name: image
+      type: string
+      default: image-registry.openshift-image-registry.svc:5000/sn-labs-ayushpathak5/counter:latest
+    - name: app-name
+      type: string
+      default: counter
+
+  workspaces:
+    - name: shared-workspace
+
+  tasks:
+    - name: cleanup
+      taskRef:
+        name: cleanup
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: fetch-source
+      runAfter:
+        - cleanup
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+
+    - name: lint
+      runAfter:
+        - fetch-source
+      taskRef:
+        name: flake8
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: tests
+      runAfter:
+        - lint
+      taskRef:
+        name: nose
+      params:
+        - name: args
+          value: "-v"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: build
+      runAfter:
+        - tests
+      taskRef:
+        name: buildah
+        kind: ClusterTask
+      params:
+        - name: IMAGE
+          value: $(params.image)
+        - name: DOCKERFILE
+          value: ./Dockerfile
+        - name: CONTEXT
+          value: .
+        - name: TLSVERIFY
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: deploy
+      runAfter:
+        - build
+      taskRef:
+        name: openshift-client
+        kind: ClusterTask
+      params:
+        - name: SCRIPT
+          value: |
+            oc create deployment $(params.app-name) --image=$(params.image) --dry-run=client -o yaml | oc apply -f -
+            oc rollout status deployment/$(params.app-name) --timeout=180s
